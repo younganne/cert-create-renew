@@ -79,4 +79,4 @@ jobs:
           sudo -i
           CB_EMAIL=${{ secrets.CB_EMAIL }}
           CB_DOMAIN=${{ vars.DOMAIN }}
-          certbot -v certonly --staging --dns-route53 -d $CB_DOMAIN -d www.$CB_DOMAIN --config-dir . --cert-path . --non-interactive --agree-tos -m $CB_EMAIL
+          sudo certbot -v certonly --staging --dns-route53 -d $CB_DOMAIN -d www.$CB_DOMAIN --config-dir . --cert-path . --non-interactive --agree-tos -m $CB_EMAIL
