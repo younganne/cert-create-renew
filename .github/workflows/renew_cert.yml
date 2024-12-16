@@ -78,4 +78,5 @@ jobs:
           export AWS_REGION=${{ vars.AWS_REGION }}
           CB_EMAIL=${{ secrets.CB_EMAIL }}
           CB_DOMAIN=${{ vars.DOMAIN }}
-          sudo certbot -v certonly --staging --dns-route53 -d $CB_DOMAIN -d www.$CB_DOMAIN --config-dir . --cert-path . --non-interactive --agree-tos -m $CB_EMAIL
+          env
+          certbot -v certonly --staging --dns-route53 -d $CB_DOMAIN -d www.$CB_DOMAIN --config-dir . --cert-path . --non-interactive --agree-tos -m $CB_EMAIL
