@@ -1,4 +1,4 @@
-name: Let's Encrypt Certificate Setup
+name: Let's Encrypt Certificate Setup with Route53
 
 on:
   workflow_dispatch:
@@ -17,6 +17,13 @@ on:
         options:
           - production
           - staging
+      hosted_zone_id:
+        description: 'AWS Route53 Hosted Zone ID'
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   setup-certificate:
@@ -27,10 +34,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
+      - name: Install AWS CLI and Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install boto3 certbot-dns-route53
 
       - name: Create certificate setup script
         run: |
@@ -40,7 +58,10 @@ jobs:
           import sys
           import os
           import argparse
-          from typing import List, Tuple
+          import json
+          import time
+          import boto3
+          from typing import List, Tuple, Optional
 
           def run_command(command: List[str]) -> Tuple[int, str, str]:
               try:
@@ -55,49 +76,63 @@ jobs:
               except Exception as e:
                   return 1, "", str(e)
 
-          def check_root() -> bool:
-              return os.geteuid() == 0
-
-          def update_system() -> bool:
-              print("Updating system packages...")
-              commands = [
-                  ["apt-get", "update"],
-                  ["apt-get", "upgrade", "-y"]
-              ]
-              for cmd in commands:
-                  code, stdout, stderr = run_command(cmd)
-                  if code != 0:
-                      print(f"Error updating system: {stderr}")
-                      return False
-              return True
+          def check_route53_access(hosted_zone_id: str) -> bool:
+              """Verify access to Route53 hosted zone"""
+              try:
+                  route53 = boto3.client('route53')
+                  response = route53.get_hosted_zone(Id=hosted_zone_id)
+                  print(f"Successfully accessed hosted zone: {response['HostedZone']['Name']}")
+                  return True
+              except Exception as e:
+                  print(f"Error accessing Route53 hosted zone: {e}")
+                  return False
 
           def install_certbot() -> bool:
+              """Install Certbot and its dependencies"""
               print("Installing Certbot...")
+              
               commands = [
+                  ["apt-get", "update"],
                   ["apt-get", "install", "-y", "software-properties-common"],
                   ["apt-get", "install", "-y", "certbot"]
               ]
+              
               for cmd in commands:
                   code, stdout, stderr = run_command(cmd)
                   if code != 0:
-                      print(f"Error installing Certbot: {stderr}")
+                      print(f"Error during installation: {stderr}")
                       return False
               return True
 
-          def obtain_certificate(domain: str, email: str, staging: bool = False) -> bool:
+          def obtain_certificate(domain: str, email: str, hosted_zone_id: str, staging: bool = False) -> bool:
+              """
+              Obtain Let's Encrypt certificate using DNS validation with Route53
+              """
               print(f"Obtaining certificate for {domain}...")
-              cmd = ["certbot", "certonly", "--non-interactive", "--agree-tos", "-m", email, "--standalone"]
+              
+              cmd = [
+                  "certbot", "certonly",
+                  "--dns-route53",
+                  "--non-interactive",
+                  "--agree-tos",
+                  "-m", email,
+                  "--dns-route53-propagation-seconds", "30"
+              ]
               
               if staging:
                   cmd.append("--test-cert")
               
               cmd.extend(["-d", domain])
               
+              # Set AWS Route53 zone ID for certbot
+              os.environ['CERTBOT_DOMAIN'] = domain
+              os.environ['CERTBOT_VALIDATION'] = hosted_zone_id
+              
               code, stdout, stderr = run_command(cmd)
               if code != 0:
                   print(f"Error obtaining certificate: {stderr}")
                   return False
-              
+                  
               print(stdout)
               return True
 
@@ -108,36 +143,42 @@ jobs:
                   print(f"Certificate directory not found: {cert_dir}")
                   return False
 
-              # Create output directory
               os.makedirs("certificates", exist_ok=True)
               
               try:
-                  # Copy certificates to artifact directory
-                  for file in ["fullchain.pem", "privkey.pem"]:
+                  for file in ["fullchain.pem", "privkey.pem", "chain.pem", "cert.pem"]:
                       src = os.path.join(cert_dir, file)
                       dst = os.path.join("certificates", file)
                       with open(src, 'rb') as f_src, open(dst, 'wb') as f_dst:
                           f_dst.write(f_src.read())
+                  
+                  # Export certificate info
+                  code, stdout, stderr = run_command(["certbot", "certificates"])
+                  if code == 0:
+                      with open("certificates/cert_info.txt", "w") as f:
+                          f.write(stdout)
+                  
                   return True
               except Exception as e:
                   print(f"Error exporting certificates: {e}")
                   return False
 
           def main():
-              parser = argparse.ArgumentParser(description="Automate Let's Encrypt certificate installation")
+              parser = argparse.ArgumentParser(description="Automate Let's Encrypt certificate installation with Route53")
               parser.add_argument("domain", help="Domain name to obtain certificate for")
               parser.add_argument("email", help="Email address for important notifications")
+              parser.add_argument("hosted_zone_id", help="AWS Route53 Hosted Zone ID")
               parser.add_argument("--staging", action="store_true", help="Use Let's Encrypt staging environment")
               args = parser.parse_args()
 
-              if not check_root():
+              if not os.geteuid() == 0:
                   print("This script must be run as root!")
                   sys.exit(1)
 
               steps = [
-                  ("Updating system", update_system),
+                  ("Verifying Route53 access", lambda: check_route53_access(args.hosted_zone_id)),
                   ("Installing Certbot", install_certbot),
-                  ("Obtaining certificate", lambda: obtain_certificate(args.domain, args.email, args.staging)),
+                  ("Obtaining certificate", lambda: obtain_certificate(args.domain, args.email, args.hosted_zone_id, args.staging)),
                   ("Exporting certificates", lambda: export_certificates(args.domain))
               ]
 
@@ -156,9 +197,10 @@ jobs:
 
       - name: Run certificate setup
         run: |
-          sudo ./setup_certificate.py \
+          sudo -E ./setup_certificate.py \
             ${{ github.event.inputs.domain }} \
             ${{ github.event.inputs.email }} \
+            ${{ github.event.inputs.hosted_zone_id }} \
             ${{ github.event.inputs.environment == 'staging' && '--staging' || '' }}
 
       - name: Upload certificates
