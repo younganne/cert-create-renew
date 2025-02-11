@@ -48,7 +48,9 @@ jobs:
       - name: Install AWS CLI and Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install boto3 certbot-dns-route53
+          pip install boto3 certbot certbot-dns-route53
+          sudo apt-get update
+          sudo apt-get install -y python3-certbot python3-certbot-dns-route53
 
       - name: Create certificate setup script
         run: |
@@ -110,13 +112,23 @@ jobs:
               """
               print(f"Obtaining certificate for {domain}...")
               
+              # Create certbot config directory
+              os.makedirs("/etc/letsencrypt", exist_ok=True)
+              
+              # Create Route53 config file
+              config_content = '''
+              dns_route53_propagation_seconds = 30
+              '''
+              with open("/etc/letsencrypt/cli.ini", "w") as f:
+                  f.write(config_content)
+              
               cmd = [
                   "certbot", "certonly",
                   "--dns-route53",
                   "--non-interactive",
                   "--agree-tos",
                   "-m", email,
-                  "--dns-route53-propagation-seconds", "30"
+                  "--preferred-challenges", "dns-01"
               ]
               
               if staging:
