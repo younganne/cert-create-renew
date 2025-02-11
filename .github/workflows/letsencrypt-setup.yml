@@ -1,0 +1,175 @@
+name: Let's Encrypt Certificate Setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: 'Domain to obtain certificate for'
+        required: true
+      email:
+        description: 'Email for Let''s Encrypt notifications'
+        required: true
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+jobs:
+  setup-certificate:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Create certificate setup script
+        run: |
+          cat > setup_certificate.py << 'EOL'
+          #!/usr/bin/env python3
+          import subprocess
+          import sys
+          import os
+          import argparse
+          from typing import List, Tuple
+
+          def run_command(command: List[str]) -> Tuple[int, str, str]:
+              try:
+                  process = subprocess.Popen(
+                      command,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.PIPE,
+                      universal_newlines=True
+                  )
+                  stdout, stderr = process.communicate()
+                  return process.returncode, stdout, stderr
+              except Exception as e:
+                  return 1, "", str(e)
+
+          def check_root() -> bool:
+              return os.geteuid() == 0
+
+          def update_system() -> bool:
+              print("Updating system packages...")
+              commands = [
+                  ["apt-get", "update"],
+                  ["apt-get", "upgrade", "-y"]
+              ]
+              for cmd in commands:
+                  code, stdout, stderr = run_command(cmd)
+                  if code != 0:
+                      print(f"Error updating system: {stderr}")
+                      return False
+              return True
+
+          def install_certbot() -> bool:
+              print("Installing Certbot...")
+              commands = [
+                  ["apt-get", "install", "-y", "software-properties-common"],
+                  ["apt-get", "install", "-y", "certbot"]
+              ]
+              for cmd in commands:
+                  code, stdout, stderr = run_command(cmd)
+                  if code != 0:
+                      print(f"Error installing Certbot: {stderr}")
+                      return False
+              return True
+
+          def obtain_certificate(domain: str, email: str, staging: bool = False) -> bool:
+              print(f"Obtaining certificate for {domain}...")
+              cmd = ["certbot", "certonly", "--non-interactive", "--agree-tos", "-m", email, "--standalone"]
+              
+              if staging:
+                  cmd.append("--test-cert")
+              
+              cmd.extend(["-d", domain])
+              
+              code, stdout, stderr = run_command(cmd)
+              if code != 0:
+                  print(f"Error obtaining certificate: {stderr}")
+                  return False
+              
+              print(stdout)
+              return True
+
+          def export_certificates(domain: str) -> bool:
+              """Export certificates to GitHub Actions artifacts"""
+              cert_dir = f"/etc/letsencrypt/live/{domain}"
+              if not os.path.exists(cert_dir):
+                  print(f"Certificate directory not found: {cert_dir}")
+                  return False
+
+              # Create output directory
+              os.makedirs("certificates", exist_ok=True)
+              
+              try:
+                  # Copy certificates to artifact directory
+                  for file in ["fullchain.pem", "privkey.pem"]:
+                      src = os.path.join(cert_dir, file)
+                      dst = os.path.join("certificates", file)
+                      with open(src, 'rb') as f_src, open(dst, 'wb') as f_dst:
+                          f_dst.write(f_src.read())
+                  return True
+              except Exception as e:
+                  print(f"Error exporting certificates: {e}")
+                  return False
+
+          def main():
+              parser = argparse.ArgumentParser(description="Automate Let's Encrypt certificate installation")
+              parser.add_argument("domain", help="Domain name to obtain certificate for")
+              parser.add_argument("email", help="Email address for important notifications")
+              parser.add_argument("--staging", action="store_true", help="Use Let's Encrypt staging environment")
+              args = parser.parse_args()
+
+              if not check_root():
+                  print("This script must be run as root!")
+                  sys.exit(1)
+
+              steps = [
+                  ("Updating system", update_system),
+                  ("Installing Certbot", install_certbot),
+                  ("Obtaining certificate", lambda: obtain_certificate(args.domain, args.email, args.staging)),
+                  ("Exporting certificates", lambda: export_certificates(args.domain))
+              ]
+
+              for step_name, step_func in steps:
+                  print(f"\n=== {step_name} ===")
+                  if not step_func():
+                      print(f"\nError during {step_name.lower()}. Exiting.")
+                      sys.exit(1)
+
+              print("\nSuccess! Certificates have been obtained and exported.")
+
+          if __name__ == "__main__":
+              main()
+          EOL
+          chmod +x setup_certificate.py
+
+      - name: Run certificate setup
+        run: |
+          sudo ./setup_certificate.py \
+            ${{ github.event.inputs.domain }} \
+            ${{ github.event.inputs.email }} \
+            ${{ github.event.inputs.environment == 'staging' && '--staging' || '' }}
+
+      - name: Upload certificates
+        uses: actions/upload-artifact@v4
+        with:
+          name: certificates
+          path: certificates/
+          retention-days: 1
+
+      - name: Cleanup sensitive files
+        if: always()
+        run: |
+          sudo rm -rf certificates/
+          sudo rm -f setup_certificate.py
