@@ -141,33 +141,72 @@ jobs:
                       return False
               return True
 
-          def manage_certificate(domain: str, email: str, hosted_zone_id: str, action: str = "create", staging: bool = False) -> bool:
+          def manage_certificate(domain: str, email: str, verification_method: str = "dns", 
+                            hosted_zone_id: str = None, webroot_path: str = None,
+                            action: str = "create", staging: bool = False) -> bool:
               """
-              Manage Let's Encrypt certificate using DNS validation with Route53
+              Manage Let's Encrypt certificate using either DNS or HTTP verification
               
               Args:
                   domain: Domain name for the certificate
                   email: Contact email address
-                  hosted_zone_id: AWS Route53 Hosted Zone ID
+                  verification_method: Either "dns" or "http"
+                  hosted_zone_id: AWS Route53 Hosted Zone ID (for DNS verification)
+                  webroot_path: Web root path (for HTTP verification)
                   action: Either "create" or "renew"
                   staging: Whether to use Let's Encrypt staging environment
               """
               action_word = "Renewing" if action == "renew" else "Obtaining"
-              print(f"{action_word} certificate for {domain}...")
+              print(f"{action_word} certificate for {domain} using {verification_method.upper()} verification...")
               
               # Create certbot config directory
               os.makedirs("/etc/letsencrypt", exist_ok=True)
               
+              # Base command
               cmd = [
                   "certbot",
                   "renew" if action == "renew" else "certonly",
-                  "--dns-route53",
                   "--non-interactive",
                   "--agree-tos",
                   "-m", email,
-                  "--preferred-challenges", "dns-01",
                   "--server", "https://acme-v02.api.letsencrypt.org/directory"
               ]
+              
+              # Add verification method-specific arguments
+              if verification_method == "dns":
+                  if not hosted_zone_id:
+                      print("Error: hosted_zone_id is required for DNS verification")
+                      return False
+                  cmd.extend([
+                      "--dns-route53",
+                      "--preferred-challenges", "dns-01"
+                  ])
+              else:  # HTTP verification
+                  if not webroot_path:
+                      print("Error: webroot_path is required for HTTP verification")
+                      return False
+                  cmd.extend([
+                      "--webroot",
+                      "-w", webroot_path,
+                      "--preferred-challenges", "http-01"
+                  ])
+              
+              # Add staging flag if needed
+              if staging:
+                  cmd.append("--test-cert")
+              
+              # Only add domain for new certificates
+              if action == "create":
+                  cmd.extend(["-d", domain])
+              
+              # Run certbot command
+              code, stdout, stderr = run_command(cmd)
+              if code != 0:
+                  print(f"Error obtaining certificate: {stderr}")
+                  return False
+                  
+              print(stdout)
+              return True
               
               # Only add domain for new certificates
               if action == "create":
