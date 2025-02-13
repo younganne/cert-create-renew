@@ -1,0 +1,22 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Resource": "arn:aws:iam::${DNS_ACCOUNT_ID}:role/certbot-dns-role"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+                "s3:GetObject",
+                "s3:ListBucket"
+            ],
+            "Resource": [
+                "arn:aws:s3:::${CERTIFICATE_BUCKET}",
+                "arn:aws:s3:::${CERTIFICATE_BUCKET}/*"
+            ]
+        }
+    ]
+}

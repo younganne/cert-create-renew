@@ -1,0 +1,80 @@
+# App Account Template
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Application Account Resources for Let''s Encrypt Certificate Management'
+
+Parameters:
+  DNSAccountId:
+    Type: String
+    Description: AWS Account ID where Route53 DNS records are managed
+  GitHubOrg:
+    Type: String
+    Description: GitHub organization name
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository name
+  CertificateBucketName:
+    Type: String
+    Description: Name of the S3 bucket for certificate storage
+
+Resources:
+  CertificateBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref CertificateBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  GitHubActionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-actions-role
+      Description: Role for GitHub Actions to manage certificates
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOrg}/${GitHubRepo}:*
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+      Policies:
+        - PolicyName: CrossAccountAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Sub arn:aws:iam::${DNSAccountId}:role/certbot-dns-role
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${CertificateBucketName}
+                  - !Sub arn:aws:s3:::${CertificateBucketName}/*
+
+Outputs:
+  GitHubActionsRoleARN:
+    Description: ARN of the GitHub Actions role
+    Value: !GetAtt GitHubActionsRole.Arn
+  CertificateBucketName:
+    Description: Name of the certificate storage bucket
+    Value: !Ref CertificateBucket
