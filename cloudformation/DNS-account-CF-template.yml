@@ -1,0 +1,49 @@
+# DNS Account (Route53) Template
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Route53 DNS Account Resources for Let''s Encrypt Certificate Management'
+
+Parameters:
+  AppAccountId:
+    Type: String
+    Description: AWS Account ID where the application/web server lives
+  ExternalId:
+    Type: String
+    Description: External ID for cross-account role assumption
+    MinLength: 12
+    MaxLength: 64
+    NoEcho: true
+
+Resources:
+  CertbotDNSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: certbot-dns-role
+      Description: Role for Let's Encrypt DNS validation in Route53
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AppAccountId}:role/github-actions-role
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+      Policies:
+        - PolicyName: Route53Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - route53:ListHostedZones
+                  - route53:GetChange
+                  - route53:ChangeResourceRecordSets
+                  - route53:GetHostedZone
+                  - route53:ListResourceRecordSets
+                Resource: '*'
+
+Outputs:
+  CertbotDNSRoleARN:
+    Description: ARN of the Route53 DNS management role
+    Value: !GetAtt CertbotDNSRole.Arn
