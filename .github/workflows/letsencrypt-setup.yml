@@ -1,4 +1,4 @@
-name: Let's Encrypt Certificate Setup with Route53
+name: Let's Encrypt Certificate Setup with Cross-Account Route53
 
 on:
   workflow_dispatch:
@@ -25,6 +25,9 @@ on:
           - dns
           - http
         default: 'dns'
+      target_config:
+        description: 'JSON string with verification config (hosted_zone_id for DNS, webroot_path for HTTP)'
+        required: true
       environment:
         description: 'Environment to deploy to'
         required: true
@@ -33,31 +36,18 @@ on:
         options:
           - production
           - staging
-      hosted_zone_id:
-        description: 'AWS Route53 Hosted Zone ID (required for DNS verification)'
+      upload_target:
+        description: 'JSON string with upload config (host, user, path). Leave empty to skip upload'
         required: false
-      webroot_path:
-        description: 'Web root path (required for HTTP verification)'
-        required: false
-        default: '/var/www/html'
-      upload_certs:
-        description: 'Upload certificates to remote server'
-        type: boolean
-        default: false
-      remote_host:
-        description: 'Remote server hostname'
-        required: false
-      remote_user:
-        description: 'Remote server username'
-        required: false
-      remote_path:
-        description: 'Remote path to upload certificates'
-        required: false
-        default: '/etc/ssl/private'
+        default: ''
 
 permissions:
   id-token: write
   contents: read
+
+env:
+  DNS_ACCOUNT: ${{ secrets.AWS_DNS_ACCOUNT_ID }}
+  APP_ACCOUNT: ${{ secrets.AWS_APP_ACCOUNT_ID }}
 
 jobs:
   setup-certificate:
@@ -68,11 +58,46 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials
+      - name: Parse configuration
+        id: config
+        run: |
+          # Parse target configuration
+          TARGET_CONFIG='${{ inputs.target_config }}'
+          if [[ '${{ inputs.verification_method }}' == 'dns' ]]; then
+            echo "hosted_zone_id=$(echo $TARGET_CONFIG | jq -r '.hosted_zone_id')" >> $GITHUB_OUTPUT
+          else
+            echo "webroot_path=$(echo $TARGET_CONFIG | jq -r '.webroot_path')" >> $GITHUB_OUTPUT
+          fi
+          
+          # Parse upload configuration if provided
+          if [[ -n '${{ inputs.upload_target }}' ]]; then
+            UPLOAD_CONFIG='${{ inputs.upload_target }}'
+            echo "remote_host=$(echo $UPLOAD_CONFIG | jq -r '.host')" >> $GITHUB_OUTPUT
+            echo "remote_user=$(echo $UPLOAD_CONFIG | jq -r '.user')" >> $GITHUB_OUTPUT
+            echo "remote_path=$(echo $UPLOAD_CONFIG | jq -r '.path')" >> $GITHUB_OUTPUT
+            echo "do_upload=true" >> $GITHUB_OUTPUT
+          else
+            echo "do_upload=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Configure AWS credentials for DNS account if using DNS verification
+      - name: Configure DNS Account Credentials
+        if: ${{ inputs.verification_method == 'dns' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::${{ env.DNS_ACCOUNT }}:role/${{ secrets.AWS_DNS_ROLE_NAME }}
           aws-region: ${{ secrets.AWS_REGION }}
+          role-duration-seconds: 900
+          role-session-name: DNSSessionGHA
+
+      # Configure AWS credentials for App account
+      - name: Configure App Account Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.APP_ACCOUNT }}:role/${{ secrets.AWS_APP_ROLE_NAME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          role-duration-seconds: 3600
+          role-session-name: AppSessionGHA
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -82,253 +107,17 @@ jobs:
       - name: Install AWS CLI and Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install boto3
+          pip install boto3 certbot certbot-dns-route53
           sudo apt-get update
-          sudo apt-get install -y certbot python3-certbot-dns-route53
-          sudo systemctl stop certbot.timer || true  # Stop any running certbot timers
-
-      - name: Create certificate setup script
-        run: |
-          cat > setup_certificate.py << 'EOL'
-          #!/usr/bin/env python3
-          import subprocess
-          import sys
-          import os
-          import argparse
-          import json
-          import time
-          import boto3
-          from typing import List, Tuple, Optional
-
-          def run_command(command: List[str]) -> Tuple[int, str, str]:
-              try:
-                  process = subprocess.Popen(
-                      command,
-                      stdout=subprocess.PIPE,
-                      stderr=subprocess.PIPE,
-                      universal_newlines=True
-                  )
-                  stdout, stderr = process.communicate()
-                  return process.returncode, stdout, stderr
-              except Exception as e:
-                  return 1, "", str(e)
-
-          def check_route53_access(hosted_zone_id: str) -> bool:
-              """Verify access to Route53 hosted zone"""
-              try:
-                  route53 = boto3.client('route53')
-                  response = route53.get_hosted_zone(Id=hosted_zone_id)
-                  print(f"Successfully accessed hosted zone: {response['HostedZone']['Name']}")
-                  return True
-              except Exception as e:
-                  print(f"Error accessing Route53 hosted zone: {e}")
-                  return False
-
-          def install_certbot() -> bool:
-              """Install Certbot and its dependencies"""
-              print("Installing Certbot...")
-              
-              commands = [
-                  ["apt-get", "update"],
-                  ["apt-get", "install", "-y", "software-properties-common"],
-                  ["apt-get", "install", "-y", "certbot"]
-              ]
-              
-              for cmd in commands:
-                  code, stdout, stderr = run_command(cmd)
-                  if code != 0:
-                      print(f"Error during installation: {stderr}")
-                      return False
-              return True
-
-          def manage_certificate(domain: str, email: str, verification_method: str = "dns", 
-                            hosted_zone_id: str = None, webroot_path: str = None,
-                            action: str = "create", staging: bool = False) -> bool:
-              """
-              Manage Let's Encrypt certificate using either DNS or HTTP verification
-              
-              Args:
-                  domain: Domain name for the certificate
-                  email: Contact email address
-                  verification_method: Either "dns" or "http"
-                  hosted_zone_id: AWS Route53 Hosted Zone ID (for DNS verification)
-                  webroot_path: Web root path (for HTTP verification)
-                  action: Either "create" or "renew"
-                  staging: Whether to use Let's Encrypt staging environment
-              """
-              action_word = "Renewing" if action == "renew" else "Obtaining"
-              print(f"{action_word} certificate for {domain} using {verification_method.upper()} verification...")
-              
-              # Create certbot config directory
-              os.makedirs("/etc/letsencrypt", exist_ok=True)
-              
-              # Base command
-              cmd = [
-                  "certbot",
-                  "renew" if action == "renew" else "certonly",
-                  "--non-interactive",
-                  "--agree-tos",
-                  "-m", email,
-                  "--server", "https://acme-v02.api.letsencrypt.org/directory"
-              ]
-              
-              # Add verification method-specific arguments
-              if verification_method == "dns":
-                  if not hosted_zone_id:
-                      print("Error: hosted_zone_id is required for DNS verification")
-                      return False
-                  cmd.extend([
-                      "--dns-route53",
-                      "--preferred-challenges", "dns-01"
-                  ])
-              else:  # HTTP verification
-                  if not webroot_path:
-                      print("Error: webroot_path is required for HTTP verification")
-                      return False
-                  cmd.extend([
-                      "--webroot",
-                      "-w", webroot_path,
-                      "--preferred-challenges", "http-01"
-                  ])
-              
-              # Add staging flag if needed
-              if staging:
-                  cmd.append("--test-cert")
-              
-              # Only add domain for new certificates
-              if action == "create":
-                  cmd.extend(["-d", domain])
-              
-              # Run certbot command
-              code, stdout, stderr = run_command(cmd)
-              if code != 0:
-                  print(f"Error obtaining certificate: {stderr}")
-                  return False
-                  
-              print(stdout)
-              return True
-              
-              # Only add domain for new certificates
-              if action == "create":
-                  cmd.extend(["-d", domain])
-              
-              if staging:
-                  cmd.append("--test-cert")
-              
-              cmd.extend(["-d", domain])
-              
-              # Set AWS Route53 zone ID for certbot
-              os.environ['CERTBOT_DOMAIN'] = domain
-              os.environ['CERTBOT_VALIDATION'] = hosted_zone_id
-              
-              code, stdout, stderr = run_command(cmd)
-              if code != 0:
-                  print(f"Error obtaining certificate: {stderr}")
-                  return False
-                  
-              print(stdout)
-              return True
-
-          def export_certificates(domain: str) -> bool:
-              """Export certificates to GitHub Actions artifacts"""
-              cert_dir = f"/etc/letsencrypt/live/{domain}"
-              if not os.path.exists(cert_dir):
-                  print(f"Certificate directory not found: {cert_dir}")
-                  return False
-
-              os.makedirs("certificates", exist_ok=True)
-              
-              try:
-                  for file in ["fullchain.pem", "privkey.pem", "chain.pem", "cert.pem"]:
-                      src = os.path.join(cert_dir, file)
-                      dst = os.path.join("certificates", file)
-                      with open(src, 'rb') as f_src, open(dst, 'wb') as f_dst:
-                          f_dst.write(f_src.read())
-                  
-                  # Export certificate info
-                  code, stdout, stderr = run_command(["certbot", "certificates"])
-                  if code == 0:
-                      with open("certificates/cert_info.txt", "w") as f:
-                          f.write(stdout)
-                  
-                  return True
-              except Exception as e:
-                  print(f"Error exporting certificates: {e}")
-                  return False
-
-          def main():
-              parser = argparse.ArgumentParser(description="Automate Let's Encrypt certificate management")
-              parser.add_argument("domain", help="Domain name to manage certificate for")
-              parser.add_argument("email", help="Email address for important notifications")
-              parser.add_argument("--action", choices=["create", "renew"], default="create", help="Action to perform")
-              parser.add_argument("--verification", choices=["dns", "http"], default="dns", help="Verification method")
-              parser.add_argument("--hosted-zone-id", help="AWS Route53 Hosted Zone ID (for DNS verification)")
-              parser.add_argument("--webroot-path", help="Web root path (for HTTP verification)")
-              parser.add_argument("--staging", action="store_true", help="Use Let's Encrypt staging environment")
-              args = parser.parse_args()
-
-              if not os.geteuid() == 0:
-                  print("This script must be run as root!")
-                  sys.exit(1)
-
-              # Verify required parameters based on verification method
-              if args.verification == "dns" and not args.hosted_zone_id:
-                  print("Error: hosted-zone-id is required for DNS verification")
-                  sys.exit(1)
-              elif args.verification == "http" and not args.webroot_path:
-                  print("Error: webroot-path is required for HTTP verification")
-                  sys.exit(1)
-
-              steps = [
-                  ("Installing Certbot", install_certbot)
-              ]
-
-              # Add verification method-specific steps
-              if args.verification == "dns":
-                  steps.append(("Verifying Route53 access", lambda: check_route53_access(args.hosted_zone_id)))
-              else:  # HTTP verification
-                  steps.extend([
-                      ("Installing web server dependencies", install_webserver_dependencies),
-                      ("Checking web server configuration", lambda: check_webserver_configuration(args.domain, args.webroot_path))
-                  ])
-
-              # Add certificate management step
-              steps.append(
-                  (f"{'Renewing' if args.action == 'renew' else 'Obtaining'} certificate", 
-                   lambda: manage_certificate(
-                       args.domain, 
-                       args.email, 
-                       args.verification,
-                       args.hosted_zone_id,
-                       args.webroot_path,
-                       args.action,
-                       args.staging
-                   ))
-              )
-
-              # Add export step
-              steps.append(("Exporting certificates", lambda: export_certificates(args.domain)))
-
-              for step_name, step_func in steps:
-                  print(f"\n=== {step_name} ===")
-                  if not step_func():
-                      print(f"\nError during {step_name.lower()}. Exiting.")
-                      sys.exit(1)
-
-              print("\nSuccess! Certificates have been obtained and exported.")
-
-          if __name__ == "__main__":
-              main()
-          EOL
-          chmod +x setup_certificate.py
+          sudo apt-get install -y python3-certbot python3-certbot-dns-route53
 
       - name: Setup SSH key
-        if: ${{ inputs.upload_certs == true }}
+        if: steps.config.outputs.do_upload == 'true'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ inputs.remote_host }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ steps.config.outputs.remote_host }} >> ~/.ssh/known_hosts
 
       - name: Run certificate management
         run: |
@@ -337,16 +126,15 @@ jobs:
             ${{ github.event.inputs.email }} \
             --action ${{ github.event.inputs.action }} \
             --verification ${{ github.event.inputs.verification_method }} \
-            ${{ github.event.inputs.verification_method == 'dns' && format('--hosted-zone-id {0}', github.event.inputs.hosted_zone_id) || '' }} \
-            ${{ github.event.inputs.verification_method == 'http' && format('--webroot-path {0}', github.event.inputs.webroot_path) || '' }} \
+            ${{ inputs.verification_method == 'dns' && format('--hosted-zone-id {0}', steps.config.outputs.hosted_zone_id) || format('--webroot-path {0}', steps.config.outputs.webroot_path) }} \
             ${{ github.event.inputs.environment == 'staging' && '--staging' || '' }}
 
-      - name: Upload certificates to remote server
-        if: ${{ inputs.upload_certs == true }}
+      - name: Upload certificates
+        if: steps.config.outputs.do_upload == 'true'
         run: |
-          scp -r certificates/* ${{ inputs.remote_user }}@${{ inputs.remote_host }}:${{ inputs.remote_path }}/
+          scp -r certificates/* ${{ steps.config.outputs.remote_user }}@${{ steps.config.outputs.remote_host }}:${{ steps.config.outputs.remote_path }}/
           # Verify upload
-          ssh ${{ inputs.remote_user }}@${{ inputs.remote_host }} "ls -l ${{ inputs.remote_path }}"
+          ssh ${{ steps.config.outputs.remote_user }}@${{ steps.config.outputs.remote_host }} "ls -l ${{ steps.config.outputs.remote_path }}"
 
       - name: Cleanup sensitive files
         if: always()
