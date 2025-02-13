@@ -17,6 +17,14 @@ on:
       email:
         description: 'Email for Let''s Encrypt notifications'
         required: true
+      verification_method:
+        description: 'Certificate verification method'
+        required: true
+        type: choice
+        options:
+          - dns
+          - http
+        default: 'dns'
       environment:
         description: 'Environment to deploy to'
         required: true
@@ -26,8 +34,12 @@ on:
           - production
           - staging
       hosted_zone_id:
-        description: 'AWS Route53 Hosted Zone ID'
-        required: true
+        description: 'AWS Route53 Hosted Zone ID (required for DNS verification)'
+        required: false
+      webroot_path:
+        description: 'Web root path (required for HTTP verification)'
+        required: false
+        default: '/var/www/html'
       upload_certs:
         description: 'Upload certificates to remote server'
         type: boolean
