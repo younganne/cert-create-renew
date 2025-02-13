@@ -283,9 +283,14 @@ jobs:
                   ("Installing Certbot", install_certbot)
               ]
 
-              # Add Route53 verification step only if using DNS verification
+              # Add verification method-specific steps
               if args.verification == "dns":
                   steps.append(("Verifying Route53 access", lambda: check_route53_access(args.hosted_zone_id)))
+              else:  # HTTP verification
+                  steps.extend([
+                      ("Installing web server dependencies", install_webserver_dependencies),
+                      ("Checking web server configuration", lambda: check_webserver_configuration(args.domain, args.webroot_path))
+                  ])
 
               # Add certificate management step
               steps.append(
