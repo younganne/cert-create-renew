@@ -28,6 +28,20 @@ on:
       hosted_zone_id:
         description: 'AWS Route53 Hosted Zone ID'
         required: true
+      upload_certs:
+        description: 'Upload certificates to remote server'
+        type: boolean
+        default: false
+      remote_host:
+        description: 'Remote server hostname'
+        required: false
+      remote_user:
+        description: 'Remote server username'
+        required: false
+      remote_path:
+        description: 'Remote path to upload certificates'
+        required: false
+        default: '/etc/ssl/private'
 
 permissions:
   id-token: write
@@ -225,6 +239,14 @@ jobs:
           EOL
           chmod +x setup_certificate.py
 
+      - name: Setup SSH key
+        if: ${{ inputs.upload_certs == true }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ inputs.remote_host }} >> ~/.ssh/known_hosts
+
       - name: Run certificate management
         run: |
           sudo -E ./setup_certificate.py \
@@ -234,15 +256,16 @@ jobs:
             --action ${{ github.event.inputs.action }} \
             ${{ github.event.inputs.environment == 'staging' && '--staging' || '' }}
 
-      - name: Upload certificates
-        uses: actions/upload-artifact@v4
-        with:
-          name: certificates
-          path: certificates/
-          retention-days: 1
+      - name: Upload certificates to remote server
+        if: ${{ inputs.upload_certs == true }}
+        run: |
+          scp -r certificates/* ${{ inputs.remote_user }}@${{ inputs.remote_host }}:${{ inputs.remote_path }}/
+          # Verify upload
+          ssh ${{ inputs.remote_user }}@${{ inputs.remote_host }} "ls -l ${{ inputs.remote_path }}"
 
       - name: Cleanup sensitive files
         if: always()
         run: |
           sudo rm -rf certificates/
           sudo rm -f setup_certificate.py
+          rm -f ~/.ssh/id_rsa
