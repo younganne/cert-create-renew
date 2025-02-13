@@ -257,11 +257,13 @@ jobs:
                   return False
 
           def main():
-              parser = argparse.ArgumentParser(description="Automate Let's Encrypt certificate management with Route53")
+              parser = argparse.ArgumentParser(description="Automate Let's Encrypt certificate management")
               parser.add_argument("domain", help="Domain name to manage certificate for")
               parser.add_argument("email", help="Email address for important notifications")
-              parser.add_argument("hosted_zone_id", help="AWS Route53 Hosted Zone ID")
               parser.add_argument("--action", choices=["create", "renew"], default="create", help="Action to perform")
+              parser.add_argument("--verification", choices=["dns", "http"], default="dns", help="Verification method")
+              parser.add_argument("--hosted-zone-id", help="AWS Route53 Hosted Zone ID (for DNS verification)")
+              parser.add_argument("--webroot-path", help="Web root path (for HTTP verification)")
               parser.add_argument("--staging", action="store_true", help="Use Let's Encrypt staging environment")
               args = parser.parse_args()
 
@@ -269,13 +271,38 @@ jobs:
                   print("This script must be run as root!")
                   sys.exit(1)
 
+              # Verify required parameters based on verification method
+              if args.verification == "dns" and not args.hosted_zone_id:
+                  print("Error: hosted-zone-id is required for DNS verification")
+                  sys.exit(1)
+              elif args.verification == "http" and not args.webroot_path:
+                  print("Error: webroot-path is required for HTTP verification")
+                  sys.exit(1)
+
               steps = [
-                  ("Verifying Route53 access", lambda: check_route53_access(args.hosted_zone_id)),
-                  ("Installing Certbot", install_certbot),
-                  (f"{'Renewing' if args.action == 'renew' else 'Obtaining'} certificate", 
-                   lambda: manage_certificate(args.domain, args.email, args.hosted_zone_id, args.action, args.staging)),
-                  ("Exporting certificates", lambda: export_certificates(args.domain))
+                  ("Installing Certbot", install_certbot)
               ]
+
+              # Add Route53 verification step only if using DNS verification
+              if args.verification == "dns":
+                  steps.append(("Verifying Route53 access", lambda: check_route53_access(args.hosted_zone_id)))
+
+              # Add certificate management step
+              steps.append(
+                  (f"{'Renewing' if args.action == 'renew' else 'Obtaining'} certificate", 
+                   lambda: manage_certificate(
+                       args.domain, 
+                       args.email, 
+                       args.verification,
+                       args.hosted_zone_id,
+                       args.webroot_path,
+                       args.action,
+                       args.staging
+                   ))
+              )
+
+              # Add export step
+              steps.append(("Exporting certificates", lambda: export_certificates(args.domain)))
 
               for step_name, step_func in steps:
                   print(f"\n=== {step_name} ===")
@@ -303,8 +330,10 @@ jobs:
           sudo -E ./setup_certificate.py \
             ${{ github.event.inputs.domain }} \
             ${{ github.event.inputs.email }} \
-            ${{ github.event.inputs.hosted_zone_id }} \
             --action ${{ github.event.inputs.action }} \
+            --verification ${{ github.event.inputs.verification_method }} \
+            ${{ github.event.inputs.verification_method == 'dns' && format('--hosted-zone-id {0}', github.event.inputs.hosted_zone_id) || '' }} \
+            ${{ github.event.inputs.verification_method == 'http' && format('--webroot-path {0}', github.event.inputs.webroot_path) || '' }} \
             ${{ github.event.inputs.environment == 'staging' && '--staging' || '' }}
 
       - name: Upload certificates to remote server
