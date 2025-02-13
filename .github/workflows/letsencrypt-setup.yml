@@ -3,8 +3,16 @@ name: Let's Encrypt Certificate Setup with Route53
 on:
   workflow_dispatch:
     inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - create
+          - renew
+        default: 'create'
       domain:
-        description: 'Domain to obtain certificate for'
+        description: 'Domain to obtain/renew certificate for'
         required: true
       email:
         description: 'Email for Let''s Encrypt notifications'
@@ -107,17 +115,26 @@ jobs:
                       return False
               return True
 
-          def obtain_certificate(domain: str, email: str, hosted_zone_id: str, staging: bool = False) -> bool:
+          def manage_certificate(domain: str, email: str, hosted_zone_id: str, action: str = "create", staging: bool = False) -> bool:
               """
-              Obtain Let's Encrypt certificate using DNS validation with Route53
+              Manage Let's Encrypt certificate using DNS validation with Route53
+              
+              Args:
+                  domain: Domain name for the certificate
+                  email: Contact email address
+                  hosted_zone_id: AWS Route53 Hosted Zone ID
+                  action: Either "create" or "renew"
+                  staging: Whether to use Let's Encrypt staging environment
               """
-              print(f"Obtaining certificate for {domain}...")
+              action_word = "Renewing" if action == "renew" else "Obtaining"
+              print(f"{action_word} certificate for {domain}...")
               
               # Create certbot config directory
               os.makedirs("/etc/letsencrypt", exist_ok=True)
               
               cmd = [
-                  "certbot", "certonly",
+                  "certbot",
+                  "renew" if action == "renew" else "certonly",
                   "--dns-route53",
                   "--non-interactive",
                   "--agree-tos",
@@ -125,6 +142,10 @@ jobs:
                   "--preferred-challenges", "dns-01",
                   "--server", "https://acme-v02.api.letsencrypt.org/directory"
               ]
+              
+              # Only add domain for new certificates
+              if action == "create":
+                  cmd.extend(["-d", domain])
               
               if staging:
                   cmd.append("--test-cert")
@@ -171,10 +192,11 @@ jobs:
                   return False
 
           def main():
-              parser = argparse.ArgumentParser(description="Automate Let's Encrypt certificate installation with Route53")
-              parser.add_argument("domain", help="Domain name to obtain certificate for")
+              parser = argparse.ArgumentParser(description="Automate Let's Encrypt certificate management with Route53")
+              parser.add_argument("domain", help="Domain name to manage certificate for")
               parser.add_argument("email", help="Email address for important notifications")
               parser.add_argument("hosted_zone_id", help="AWS Route53 Hosted Zone ID")
+              parser.add_argument("--action", choices=["create", "renew"], default="create", help="Action to perform")
               parser.add_argument("--staging", action="store_true", help="Use Let's Encrypt staging environment")
               args = parser.parse_args()
 
@@ -185,7 +207,8 @@ jobs:
               steps = [
                   ("Verifying Route53 access", lambda: check_route53_access(args.hosted_zone_id)),
                   ("Installing Certbot", install_certbot),
-                  ("Obtaining certificate", lambda: obtain_certificate(args.domain, args.email, args.hosted_zone_id, args.staging)),
+                  (f"{'Renewing' if args.action == 'renew' else 'Obtaining'} certificate", 
+                   lambda: manage_certificate(args.domain, args.email, args.hosted_zone_id, args.action, args.staging)),
                   ("Exporting certificates", lambda: export_certificates(args.domain))
               ]
 
@@ -202,12 +225,13 @@ jobs:
           EOL
           chmod +x setup_certificate.py
 
-      - name: Run certificate setup
+      - name: Run certificate management
         run: |
           sudo -E ./setup_certificate.py \
             ${{ github.event.inputs.domain }} \
             ${{ github.event.inputs.email }} \
             ${{ github.event.inputs.hosted_zone_id }} \
+            --action ${{ github.event.inputs.action }} \
             ${{ github.event.inputs.environment == 'staging' && '--staging' || '' }}
 
       - name: Upload certificates
