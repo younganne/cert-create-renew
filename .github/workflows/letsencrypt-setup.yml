@@ -336,6 +336,24 @@ jobs:
       - name: Test network connectivity
         if: ${{ inputs.verification_method == 'http' }}
         run: |
+          echo "=== Verifying directory structure ==="
+          WEBROOT="${{ steps.config.outputs.webroot_path }}"
+          ACME_DIR="$WEBROOT/.well-known/acme-challenge"
+          
+          echo "Checking directory existence and permissions..."
+          if [ ! -d "$WEBROOT" ]; then
+            echo "Error: Webroot directory does not exist"
+            exit 1
+          fi
+          if [ ! -d "$ACME_DIR" ]; then
+            echo "Error: ACME challenge directory does not exist"
+            exit 1
+          fi
+          
+          echo "Directory permissions:"
+          ls -la "$WEBROOT"
+          ls -la "$ACME_DIR"
+
           echo "=== Testing DNS Resolution ==="
           # Test DNS resolution
           IP=$(dig +short ${{ github.event.inputs.domain }} | tail -n1)
@@ -350,45 +368,59 @@ jobs:
           echo "GitHub Actions runner public IP: $RUNNER_IP"
 
           echo "=== Testing Port 80 Accessibility ==="
-          # Test if port 80 is open
-          if nc -zv -w5 ${{ github.event.inputs.domain }} 80 2>&1; then
-            echo "Port 80 is accessible"
+          # Test if port 80 is open locally first
+          if nc -z localhost 80; then
+            echo "Port 80 is listening locally"
           else
-            echo "Error: Port 80 is not accessible"
+            echo "Error: Port 80 is not listening locally"
+            echo "Nginx status:"
+            sudo systemctl status nginx
+            exit 1
+          fi
+
+          # Test if port 80 is accessible externally
+          if nc -zv -w5 ${{ github.event.inputs.domain }} 80 2>&1; then
+            echo "Port 80 is accessible externally"
+          else
+            echo "Error: Port 80 is not accessible externally"
             exit 1
           fi
 
           echo "=== Testing ACME Challenge Path ==="
-          # Test ACME challenge path
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://${{ github.event.inputs.domain }}/.well-known/acme-challenge/test)
-          if [ "$HTTP_CODE" = "404" ]; then
-            echo "ACME challenge path is properly configured (returns 404 when empty)"
-          else
-            echo "Warning: ACME challenge path returned unexpected status code: $HTTP_CODE"
-            echo "Expected 404 for empty challenge directory"
-          fi
-
-          # Test writing and accessing a test file
-          echo "=== Testing Challenge File Access ==="
+          # Create test content
           TEST_CONTENT="acme-test-$(date +%s)"
-          sudo sh -c "echo $TEST_CONTENT > ${{ steps.config.outputs.webroot_path }}/.well-known/acme-challenge/test.txt"
-          RETRIEVED_CONTENT=$(curl -s http://${{ github.event.inputs.domain }}/.well-known/acme-challenge/test.txt)
+          TEST_FILE="$ACME_DIR/test.txt"
+          
+          echo "Creating test file..."
+          echo "$TEST_CONTENT" > "$TEST_FILE"
+          if [ ! -f "$TEST_FILE" ]; then
+            echo "Error: Failed to create test file"
+            echo "Current permissions:"
+            ls -la "$ACME_DIR"
+            exit 1
+          fi
+          
+          echo "Verifying file content..."
+          cat "$TEST_FILE"
+          
+          echo "Testing HTTP access..."
+          RETRIEVED_CONTENT=$(curl -v -s http://${{ github.event.inputs.domain }}/.well-known/acme-challenge/test.txt)
+          echo "Retrieved content: $RETRIEVED_CONTENT"
+          
           if [ "$TEST_CONTENT" = "$RETRIEVED_CONTENT" ]; then
             echo "Successfully verified challenge file access"
           else
             echo "Error: Could not verify challenge file access"
             echo "Expected: $TEST_CONTENT"
             echo "Got: $RETRIEVED_CONTENT"
+            echo "Checking nginx logs..."
+            sudo tail -n 50 /var/log/nginx/error.log
+            echo "Checking nginx configuration..."
+            sudo nginx -T
             exit 1
           fi
-          sudo rm -f ${{ steps.config.outputs.webroot_path }}/.well-known/acme-challenge/test.txt
-
-          echo "=== Testing Web Server Logs ==="
-          # Check nginx error logs for any issues
-          if sudo test -f /var/log/nginx/error.log; then
-            echo "Recent nginx errors:"
-            sudo tail -n 50 /var/log/nginx/error.log
-          fi
+          
+          rm -f "$TEST_FILE"
 
           echo "=== Network Tests Complete ==="
 
