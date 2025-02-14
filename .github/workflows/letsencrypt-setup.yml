@@ -1,4 +1,10 @@
-name: Let's Encrypt Certificate Setup with Cross-Account Route53
+- name: Install network tools
+        if: ${{ inputs.verification_method == 'http' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl dnsutils netcat-openbsd
+
+      - name: Test networkname: Let's Encrypt Certificate Setup with Cross-Account Route53
 
 on:
   workflow_dispatch:
@@ -156,10 +162,39 @@ jobs:
               return True
 
           def check_webserver_configuration(domain: str, webroot_path: str) -> bool:
+              """Validate web server configuration for HTTP verification"""
               print("Checking web server configuration...")
+              
+              # Check if webroot path exists
               if not os.path.exists(webroot_path):
                   print(f"Error: Webroot path {webroot_path} does not exist")
                   return False
+                  
+              # Check if .well-known/acme-challenge directory exists and is writable
+              acme_path = os.path.join(webroot_path, '.well-known/acme-challenge')
+              if not os.path.exists(acme_path):
+                  try:
+                      os.makedirs(acme_path, mode=0o755, exist_ok=True)
+                  except Exception as e:
+                      print(f"Error creating ACME challenge directory: {e}")
+                      return False
+                      
+              # Check if directory is writable
+              if not os.access(acme_path, os.W_OK):
+                  print(f"Error: ACME challenge directory is not writable")
+                  return False
+                  
+              # Create test file
+              test_file = os.path.join(acme_path, 'test.txt')
+              try:
+                  with open(test_file, 'w') as f:
+                      f.write('test')
+                  os.remove(test_file)
+              except Exception as e:
+                  print(f"Error testing write permissions: {e}")
+                  return False
+                  
+              print("Web server configuration validated successfully")
               return True
 
           def manage_certificate(domain: str, email: str, verification_method: str = "dns", 
@@ -293,6 +328,41 @@ jobs:
               main()
           EOL
           chmod +x setup_certificate.py
+
+      - name: Set up web server environment
+        if: ${{ inputs.verification_method == 'http' }}
+        run: |
+          # Install nginx
+          sudo apt-get update
+          sudo apt-get install -y nginx
+
+          # Create webroot directory
+          sudo mkdir -p ${{ steps.config.outputs.webroot_path }}
+          sudo mkdir -p ${{ steps.config.outputs.webroot_path }}/.well-known/acme-challenge
+          sudo chown -R www-data:www-data ${{ steps.config.outputs.webroot_path }}
+          sudo chmod -R 755 ${{ steps.config.outputs.webroot_path }}
+
+          # Configure nginx for ACME challenge
+          echo "server {
+              listen 80;
+              server_name ${{ github.event.inputs.domain }};
+              
+              location /.well-known/acme-challenge/ {
+                  root ${{ steps.config.outputs.webroot_path }};
+              }
+              
+              location / {
+                  return 404;
+              }
+          }" | sudo tee /etc/nginx/sites-available/certbot
+
+          # Enable the configuration
+          sudo ln -sf /etc/nginx/sites-available/certbot /etc/nginx/sites-enabled/
+          sudo rm -f /etc/nginx/sites-enabled/default
+          
+          # Test and restart nginx
+          sudo nginx -t
+          sudo systemctl restart nginx
 
       - name: Run certificate management
         run: |
