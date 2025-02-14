@@ -1,10 +1,4 @@
-- name: Install network tools
-        if: ${{ inputs.verification_method == 'http' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl dnsutils netcat-openbsd
-
-      - name: Test networkname: Let's Encrypt Certificate Setup with Cross-Account Route53
+name: Let's Encrypt Certificate Setup with Cross-Account Route53
 
 on:
   workflow_dispatch:
@@ -298,8 +292,12 @@ jobs:
               ]
 
               if args.verification == "http":
-                  steps.append(("Checking web server configuration", 
-                              lambda: check_webserver_configuration(args.domain, args.webroot_path)))
+                  steps.extend([
+                      ("Checking network connectivity",
+                       lambda: check_network_connectivity(args.domain)),
+                      ("Checking web server configuration", 
+                       lambda: check_webserver_configuration(args.domain, args.webroot_path))
+                  ])
 
               steps.append(
                   (f"{'Renewing' if args.action == 'renew' else 'Obtaining'} certificate", 
@@ -329,12 +327,70 @@ jobs:
           EOL
           chmod +x setup_certificate.py
 
-      - name: Set up web server environment
+      - name: Install network tools
         if: ${{ inputs.verification_method == 'http' }}
         run: |
-          # Install nginx
           sudo apt-get update
-          sudo apt-get install -y nginx
+          sudo apt-get install -y curl dnsutils netcat-openbsd
+
+      - name: Test network connectivity
+        if: ${{ inputs.verification_method == 'http' }}
+        run: |
+          echo "=== Testing DNS Resolution ==="
+          # Test DNS resolution
+          IP=$(dig +short ${{ github.event.inputs.domain }} | tail -n1)
+          if [ -z "$IP" ]; then
+            echo "Error: Could not resolve domain ${{ github.event.inputs.domain }}"
+            exit 1
+          fi
+          echo "Domain resolves to IP: $IP"
+
+          # Get public IP of runner
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          echo "GitHub Actions runner public IP: $RUNNER_IP"
+
+          echo "=== Testing Port 80 Accessibility ==="
+          # Test if port 80 is open
+          if nc -zv -w5 ${{ github.event.inputs.domain }} 80 2>&1; then
+            echo "Port 80 is accessible"
+          else
+            echo "Error: Port 80 is not accessible"
+            exit 1
+          fi
+
+          echo "=== Testing ACME Challenge Path ==="
+          # Test ACME challenge path
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://${{ github.event.inputs.domain }}/.well-known/acme-challenge/test)
+          if [ "$HTTP_CODE" = "404" ]; then
+            echo "ACME challenge path is properly configured (returns 404 when empty)"
+          else
+            echo "Warning: ACME challenge path returned unexpected status code: $HTTP_CODE"
+            echo "Expected 404 for empty challenge directory"
+          fi
+
+          # Test writing and accessing a test file
+          echo "=== Testing Challenge File Access ==="
+          TEST_CONTENT="acme-test-$(date +%s)"
+          sudo sh -c "echo $TEST_CONTENT > ${{ steps.config.outputs.webroot_path }}/.well-known/acme-challenge/test.txt"
+          RETRIEVED_CONTENT=$(curl -s http://${{ github.event.inputs.domain }}/.well-known/acme-challenge/test.txt)
+          if [ "$TEST_CONTENT" = "$RETRIEVED_CONTENT" ]; then
+            echo "Successfully verified challenge file access"
+          else
+            echo "Error: Could not verify challenge file access"
+            echo "Expected: $TEST_CONTENT"
+            echo "Got: $RETRIEVED_CONTENT"
+            exit 1
+          fi
+          sudo rm -f ${{ steps.config.outputs.webroot_path }}/.well-known/acme-challenge/test.txt
+
+          echo "=== Testing Web Server Logs ==="
+          # Check nginx error logs for any issues
+          if sudo test -f /var/log/nginx/error.log; then
+            echo "Recent nginx errors:"
+            sudo tail -n 50 /var/log/nginx/error.log
+          fi
+
+          echo "=== Network Tests Complete ==="
 
           # Create webroot directory
           sudo mkdir -p ${{ steps.config.outputs.webroot_path }}
