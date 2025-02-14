@@ -1,0 +1,3 @@
+boto3>=1.26.0
+certbot>=2.7.0
+certbot-dns-route53>=2.7.0
