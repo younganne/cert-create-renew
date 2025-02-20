@@ -85,10 +85,11 @@ jobs:
         if: ${{ inputs.verification_method == 'dns' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ env.DNS_ACCOUNT }}:role/${{ secrets.AWS_DNS_ROLE_NAME }}
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_DNS_ACCOUNT_ID }}:role/${{ secrets.AWS_DNS_ROLE_NAME }}
           aws-region: ${{ secrets.AWS_REGION }}
           role-duration-seconds: 900
           role-session-name: DNSSessionGHA
+          mask-aws-account-id: false
 
       # Configure AWS credentials for App account
       - name: Configure App Account Credentials
