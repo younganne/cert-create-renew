@@ -85,11 +85,10 @@ jobs:
         if: ${{ inputs.verification_method == 'dns' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_DNS_ACCOUNT_ID }}:role/${{ secrets.AWS_DNS_ROLE_NAME }}
+          role-to-assume: arn:aws:iam::${{ env.DNS_ACCOUNT }}:role/${{ secrets.AWS_DNS_ROLE_NAME }}
           aws-region: ${{ secrets.AWS_REGION }}
           role-duration-seconds: 900
           role-session-name: DNSSessionGHA
-          mask-aws-account-id: false
 
       # Configure AWS credentials for App account
       - name: Configure App Account Credentials
@@ -119,6 +118,175 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ steps.config.outputs.remote_host }} >> ~/.ssh/known_hosts
+
+      - name: Create certificate setup script
+        run: |
+          cat > setup_certificate.py << 'EOL'
+          #!/usr/bin/env python3
+          import subprocess
+          import sys
+          import os
+          import argparse
+          from typing import List, Tuple
+
+          def run_command(command: List[str]) -> Tuple[int, str, str]:
+              try:
+                  process = subprocess.Popen(
+                      command,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.PIPE,
+                      universal_newlines=True
+                  )
+                  stdout, stderr = process.communicate()
+                  return process.returncode, stdout, stderr
+              except Exception as e:
+                  return 1, "", str(e)
+
+          def check_webserver_configuration(domain: str, webroot_path: str) -> bool:
+              print("=== Verifying directory structure ===")
+              print("Checking directory existence and permissions...")
+              
+              if not os.path.exists(webroot_path):
+                  print(f"Error: Webroot directory does not exist: {webroot_path}")
+                  return False
+                  
+              acme_path = os.path.join(webroot_path, ".well-known", "acme-challenge")
+              try:
+                  os.makedirs(acme_path, exist_ok=True)
+              except Exception as e:
+                  print(f"Error creating ACME challenge directory: {e}")
+                  return False
+                  
+              return True
+
+          def install_certbot() -> bool:
+              print("Installing Certbot...")
+              
+              commands = [
+                  ["apt-get", "update"],
+                  ["apt-get", "install", "-y", "certbot"]
+              ]
+              
+              for cmd in commands:
+                  code, stdout, stderr = run_command(cmd)
+                  if code != 0:
+                      print(f"Error during installation: {stderr}")
+                      return False
+              return True
+
+          def manage_certificate(domain: str, email: str, verification_method: str = "http", 
+                              webroot_path: str = None, staging: bool = False) -> bool:
+              action_word = "Obtaining"
+              print(f"{action_word} certificate for {domain} using {verification_method.upper()} verification...")
+              
+              cmd = [
+                  "certbot", "certonly",
+                  "--non-interactive",
+                  "--agree-tos",
+                  "-m", email
+              ]
+              
+              if verification_method == "http":
+                  if not webroot_path:
+                      print("Error: webroot_path is required for HTTP verification")
+                      return False
+                  cmd.extend([
+                      "--webroot",
+                      "-w", webroot_path,
+                      "--preferred-challenges", "http-01"
+                  ])
+              
+              if staging:
+                  cmd.append("--test-cert")
+              
+              cmd.extend(["-d", domain])
+              
+              code, stdout, stderr = run_command(cmd)
+              if code != 0:
+                  print(f"Error obtaining certificate: {stderr}")
+                  return False
+                  
+              print(stdout)
+              return True
+
+          def export_certificates(domain: str) -> bool:
+              cert_dir = f"/etc/letsencrypt/live/{domain}"
+              if not os.path.exists(cert_dir):
+                  print(f"Certificate directory not found: {cert_dir}")
+                  return False
+
+              os.makedirs(f"certificates/{domain}", exist_ok=True)
+              
+              try:
+                  cert_files = {
+                      "fullchain.pem": "fullchain.pem",
+                      "privkey.pem": "privkey.pem",
+                      "chain.pem": "chain.pem",
+                      "cert.pem": "cert.pem"
+                  }
+                  
+                  for src_name, dst_name in cert_files.items():
+                      src = os.path.join(cert_dir, src_name)
+                      dst = os.path.join(f"certificates/{domain}", dst_name)
+                      if os.path.exists(src):
+                          with open(src, 'rb') as f_src, open(dst, 'wb') as f_dst:
+                              f_dst.write(f_src.read())
+                  
+                  return True
+              except Exception as e:
+                  print(f"Error exporting certificates: {e}")
+                  return False
+
+          def main():
+              parser = argparse.ArgumentParser(description="Automate Let's Encrypt certificate management")
+              parser.add_argument("domain", help="Domain name to manage certificate for")
+              parser.add_argument("email", help="Email address for important notifications")
+              parser.add_argument("--action", choices=["create", "renew"], default="create", help="Action to perform")
+              parser.add_argument("--verification", choices=["dns", "http"], default="http", help="Verification method")
+              parser.add_argument("--webroot-path", help="Web root path (for HTTP verification)")
+              parser.add_argument("--staging", action="store_true", help="Use Let's Encrypt staging environment")
+              args = parser.parse_args()
+
+              if not os.geteuid() == 0:
+                  print("This script must be run as root!")
+                  sys.exit(1)
+
+              steps = [
+                  ("Installing Certbot", install_certbot)
+              ]
+
+              # Add verification-specific steps
+              if args.verification == "http":
+                  steps.append(("Checking web server configuration", 
+                              lambda: check_webserver_configuration(args.domain, args.webroot_path)))
+
+              # Add certificate management step
+              steps.append(
+                  ("Managing certificate", 
+                   lambda: manage_certificate(
+                       args.domain, 
+                       args.email,
+                       args.verification,
+                       args.webroot_path,
+                       args.staging
+                   ))
+              )
+
+              # Add export step
+              steps.append(("Exporting certificates", lambda: export_certificates(args.domain)))
+
+              for step_name, step_func in steps:
+                  print(f"\n=== {step_name} ===")
+                  if not step_func():
+                      print(f"\nError during {step_name.lower()}. Exiting.")
+                      sys.exit(1)
+
+              print("\nSuccess! Certificates have been obtained and exported.")
+
+          if __name__ == "__main__":
+              main()
+          EOL
+          chmod +x setup_certificate.py
 
       - name: Setup webroot directory
         if: ${{ inputs.verification_method == 'http' }}
