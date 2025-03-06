@@ -31,6 +31,7 @@ RUN touch /ssh/ssh_key && chmod 600 /ssh/ssh_key
 # Set up cron job
 RUN echo "0 3 1 * * /scripts/cert_renewal.sh >> /var/log/cron.log 2>&1" > /etc/cron.d/cert-renew && \
     chmod 0644 /etc/cron.d/cert-renew
+    ## have cron run by kubernetes
 
 # Create log file
 RUN touch /var/log/cron.log
