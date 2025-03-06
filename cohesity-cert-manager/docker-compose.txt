@@ -1,0 +1,27 @@
+version: '3'
+
+services:
+  certbot:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: cohesity-cert-manager
+    restart: unless-stopped
+    volumes:
+      - ./letsencrypt:/etc/letsencrypt
+      - ./logs:/var/log
+    ports:
+      - "80:80"  # Required for HTTP validation
+    environment:
+      - DOMAIN=malkovich.sys.icsi.berkeley.edu
+      - EMAIL=your-email@berkeley.edu
+      - COHESITY_HOST=malkovich.sys.icsi.berkeley.edu
+      - COHESITY_USER=admin
+      - COHESITY_PASSWORD=${COHESITY_PASSWORD}
+      - DEPLOY_METHOD=ssh  # Options: ssh, api
+    networks:
+      - cert-network
+
+networks:
+  cert-network:
+    driver: bridge
