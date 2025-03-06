@@ -1,5 +1,10 @@
 FROM ubuntu:22.04
 
+# Set environment variables to make installation non-interactive
+ENV DEBIAN_FRONTEND=noninteractive
+#ENV TZ=Etc/UTC
+ENV TZ=America/Los_Angeles
+
 # Install required packages
 RUN apt-get update && \
     apt-get install -y certbot openssh-client python3 python3-pip cron curl && \

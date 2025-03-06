@@ -12,7 +12,7 @@ fi
 # Initialize certificates if needed
 if [ ! -d "/etc/letsencrypt/live/$DOMAIN" ]; then
     echo "Initial certificate request for $DOMAIN"
-    certbot certonly --standalone -d $DOMAIN --agree-tos --email $EMAIL --non-interactive
+    certbot certonly --standalone -d $DOMAIN --agree-tos --email $EMAIL --non-interactive --staging
     
     # Deploy certificates immediately after initial request
     /scripts/cert_renewal.sh
