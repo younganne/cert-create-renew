@@ -21,6 +21,8 @@ if [ ! -f "$LAST_DEPLOY_RECORD" ] || [ "$CERT_PATH" -nt "$LAST_DEPLOY_RECORD" ];
     # Deploy certificate to Cohesity cluster
     if [ "$DEPLOY_METHOD" = "api" ]; then
         log "Using API method for deployment"
+        # Read password from Docker secret
+        COHESITY_PASSWORD=$(cat /run/secrets/cohesity_password)
         python3 /scripts/deploy_cert.py \
             --cluster "$COHESITY_HOST" \
             --username "$COHESITY_USER" \

@@ -4,12 +4,12 @@
 DOMAIN=malkovich.sys.icsi.berkeley.edu
 
 # Contact email for Let's Encrypt
-EMAIL=anne@icsi.berkeley.edu
+EMAIL=your-email@berkeley.edu
 
 # Cohesity cluster details
 COHESITY_HOST=malkovich.sys.icsi.berkeley.edu
 COHESITY_USER=admin
-COHESITY_PASSWORD="BmRT-rHJhFTX@kqiLJXXqce2s.2epF4KzuPGEeWR!j4vfd!se"
+# COHESITY_PASSWORD is now stored in Docker Secrets
 
 # Deployment method (options: ssh, api)
 DEPLOY_METHOD=ssh

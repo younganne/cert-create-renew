@@ -51,10 +51,23 @@ The solution uses Docker to create an isolated environment that:
    # You'll need to follow Cohesity's documentation for adding the public key
    ```
 
-3. **Configure environment variables**
+3. **Set up Docker Secrets**
 
    ```bash
-   # Create a .env file
+   # Create a secrets directory
+   mkdir -p secrets
+   
+   # Create the password secret file
+   echo "your-secure-password" > secrets/cohesity_password.txt
+   
+   # Secure the secrets file
+   chmod 600 secrets/cohesity_password.txt
+   ```
+
+4. **Configure environment variables**
+
+   ```bash
+   # Create a .env file for non-sensitive environment variables
    cp .env.example .env
    
    # Edit the .env file with your specific settings

@@ -1,6 +1,14 @@
 #!/bin/bash
 set -e
 
+# Check for required secrets
+if [ -f "/run/secrets/cohesity_password" ]; then
+    echo "Cohesity password secret found"
+else
+    echo "ERROR: Cohesity password secret not found"
+    exit 1
+fi
+
 # Initialize certificates if needed
 if [ ! -d "/etc/letsencrypt/live/$DOMAIN" ]; then
     echo "Initial certificate request for $DOMAIN"
