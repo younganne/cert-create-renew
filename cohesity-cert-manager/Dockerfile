@@ -2,7 +2,7 @@ FROM ubuntu:22.04
 
 # Set environment variables to make installation non-interactive
 ENV DEBIAN_FRONTEND=noninteractive
-#ENV TZ=Etc/UTC
+
 ENV TZ=America/Los_Angeles
 
 # Install required packages
