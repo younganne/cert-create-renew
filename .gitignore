@@ -1,3 +1,8 @@
-cohesity-cert-manager/secrets/*
-cohesity-cert-manager/ssh/*
+cohesity-cert-manager/secrets
+cohesity-cert-manager/ssh
+cohesity-cert-manager/logs
+cohesity-cert-manager/access_token
+cohesity-cert-manager/letsencrypt/keys
+cohesity-cert-manager/letsencrypt/csr
+cohesity-cert-manager/letsencrypt/accounts
 **.DS_Store**
