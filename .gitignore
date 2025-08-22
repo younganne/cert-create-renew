@@ -1,0 +1,3 @@
+cohesity-cert-manager/secrets/*
+cohesity-cert-manager/ssh/*
+**.DS_Store**
