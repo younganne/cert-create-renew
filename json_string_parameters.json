@@ -1,0 +1,28 @@
+// HTTP validation
+{
+  "action": "create",
+  "domain": "annepants.com",
+  "email": "anne@icsi.berkeley.edu",
+  "verification_method": "http",
+  "target_config": {
+    "webroot_path": "/var/www/html"
+  },
+  "environment": "production"
+}
+
+// DNS validation
+{
+  "action": "create",
+  "domain": "annepants.com",
+  "email": "anne@icsi.berkeley.edu",
+  "verification_method": "dns",
+  "target_config": {
+    "hosted_zone_id": "Z07864873ICJTWYGL9BNA"
+  },
+  "environment": "production",
+    "upload_target": {
+      "host": "annepants.com",
+      "user": "ubuntu",
+      "path": "/etc/ssl/private"
+    }
+}
