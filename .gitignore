@@ -2,3 +2,11 @@
 **secrets/
 **ssh/
 **env.sh
+**access_token
+cohesity-cert-manager/letsencrypt/accounts/
+cohesity-cert-manager/letsencrypt/csr/
+cohesity-cert-manager/letsencrypt/keys/
+cohesity-cert-manager/logs/
+cohesity-cert-manager/configs/etc/dehydrated/domains.txt
+scripts/user_data
+json_string_parameters.json
