@@ -1,0 +1,33 @@
+# version: '3.8'
+
+services:
+  certbot:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: cohesity-cert-manager
+    restart: unless-stopped
+    volumes:
+      - ./letsencrypt:/etc/letsencrypt
+      - ./logs:/var/log
+      - ./ssh/ssh_key:/ssh/ssh_key
+    ports:
+      - "80:80"  # Required for HTTP validation
+    environment:
+      - DOMAIN=example.com
+      - EMAIL=your-email@example.com
+      - COHESITY_HOST=cluster.example.com
+      - COHESITY_USER=admin
+      - DEPLOY_METHOD=ssh  # Options: ssh, api
+    secrets:
+      - cohesity_password
+    networks:
+      - cert-network
+
+networks:
+  cert-network:
+    driver: bridge
+    
+secrets:
+  cohesity_password:
+    file: ./secrets/cohesity_password.txt
