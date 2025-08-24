@@ -5,4 +5,12 @@ cohesity-cert-manager/access_token
 cohesity-cert-manager/letsencrypt/keys
 cohesity-cert-manager/letsencrypt/csr
 cohesity-cert-manager/letsencrypt/accounts
+cohesity-cert-manager/env.sh
+cohesity-cert-manager/configs/etc/dehydrated/domains.txt
+cohesity-cert-manager/*
+scripts/deployment_script.sh
+
+##scripts/deployment_script_sanitized.sh
+json_string_parameters.json
+scripts/user_data
 **.DS_Store**
